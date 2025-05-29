@@ -36,7 +36,7 @@ async def main():
         client.logger.info(f"next_shot_team: {next_shot_team}")
 
         if next_shot_team == match_team_name:
-            translation_velocity = 0.1
+            translation_velocity = 2.371
             angular_velocity_sign = 1
             angular_velocity = np.pi / 2
             shot_angle = 91.7

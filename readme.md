@@ -27,8 +27,8 @@ Note that the user name and password already registered are in the .env of this 
 
 
 ### Make Match
-In the "src.setting.json" file,  describe the information required for the match, such as the **standard_end_count**, **simulator** to be used, **time_limits**, etc.
-(Currently, “fcv1” is the only simulator available, so matches cannot be played on other simulators.)
+In the "src.setting.json" file,  describe the information required for the match, such as the **standard_end_count**, **time_limits**, **simulator** and **applied_rule** to be used, etc.
+(Currently, “fcv1” is the only simulator available, so matches cannot be played on other simulators. For applied_rule, select either no_tick_rule or five_rock_rule.)
 After completing the settings in setting.json, enter the following command.
 ```bash
 cd src

@@ -65,6 +65,7 @@ class TeamModel(BaseModel):
 class ClientDataModel(BaseModel):
     tournament: TournamentModel
     simulator: PhysicalSimulatorModel
+    applied_rule: str
     time_limit: int
     extra_end_time_limit: int
     standard_end_count: int
