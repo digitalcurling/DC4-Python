@@ -8,7 +8,7 @@ import logging
 from load_secrets import username, password
 from dcclient.send_database import ClientDataModel
 
-URL = "http://localhost:10000/matches"
+URL = "http://localhost:5000/matches"
 logger = logging.getLogger("Match_Maker")
 logger.setLevel(level=logging.INFO)
 formatter = logging.Formatter(

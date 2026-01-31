@@ -1,18 +1,31 @@
 import asyncio
+from datetime import datetime
 import json
 import numpy as np
+import logging
 from pathlib import Path
 
 from load_secrets import username, password
 from dcclient.dc_client import DCClient
 from dcclient.send_database import TeamModel, MatchNameModel
 
+# ログファイルの保存先ディレクトリを指定
+par_dir = Path(__file__).parents[1]
+log_dir = par_dir / "logs"
+
+current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_file_name = f"dc3_5_{current_time}.log"
+log_file_path = log_dir / log_file_name
+formatter = logging.Formatter(
+    "%(asctime)s, %(name)s : %(levelname)s - %(message)s"
+)
 
 async def main():
     # 最初のエンドにおいて、team0が先攻、team1が後攻です。
     # デフォルトではteam1となっており、先攻に切り替えたい場合は下記を
     # team_name=MatchNameModel.team0
     # に変更してください
+    # なお、先に
     json_path = Path(__file__).parents[1] / "match_id.json"
     with open(json_path, "r") as f:
         match_id = json.load(f)
@@ -21,6 +34,9 @@ async def main():
     with open("team1_config.json", "r") as f:
         data = json.load(f)
     client_data = TeamModel(**data)
+    file_handler = logging.FileHandler(log_file_path, encoding="utf-8", mode="w")
+    file_handler.setFormatter(formatter)
+    client.logger.addHandler(file_handler)
     client.logger.info(f"client_data.team_name: {client_data.team_name}")
     client.logger.debug(f"client_data: {client_data}")
 
@@ -36,13 +52,11 @@ async def main():
         client.logger.info(f"next_shot_team: {next_shot_team}")
 
         if next_shot_team == match_team_name:
-            translation_velocity = 2.371
-            angular_velocity_sign = 1
+            translation_velocity = 2.3
             angular_velocity = np.pi / 2
-            shot_angle = 91.7
+            shot_angle = np.pi / 2
             await client.send_shot_info(
                 translation_velocity=translation_velocity,
-                angular_velocity_sign=angular_velocity_sign,
                 shot_angle=shot_angle,
                 angular_velocity=angular_velocity,
             )

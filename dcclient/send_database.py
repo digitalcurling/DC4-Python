@@ -26,7 +26,6 @@ class TournamentModel(BaseModel):
 
 class ShotInfoModel(BaseModel):
     translation_velocity: float
-    angular_velocity_sign: int
     angular_velocity: float | None
     shot_angle: float
 
@@ -67,8 +66,8 @@ class ClientDataModel(BaseModel):
     tournament: TournamentModel
     simulator: PhysicalSimulatorModel
     applied_rule: str
-    time_limit: int
-    extra_end_time_limit: int
+    time_limit: float
+    extra_end_time_limit: float
     standard_end_count: int
     match_name: str
 

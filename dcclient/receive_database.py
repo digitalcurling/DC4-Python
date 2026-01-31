@@ -41,15 +41,15 @@ class CoordinateDataSchema(BaseModel):
 
 
 class StoneCoordinateSchema(BaseModel):
-    stone_coordinate_data: Dict[str, List[CoordinateDataSchema]]
+    data: Dict[str, List[CoordinateDataSchema]]
 
     class Config:
         from_attributes = True
 
 
 class ScoreSchema(BaseModel):
-    team0_score: list
-    team1_score: list
+    team0: list
+    team1: list
 
     class Config:
         from_attributes = True
@@ -68,6 +68,12 @@ class TeamSchema(BaseModel):
     player4_data: Optional[PlayerSchema] = None
 
 
+class ShotInfoSchema(BaseModel):
+    translation_velocity: float
+    angular_velocity: float
+    shot_angle: float
+
+
 class StateSchema(BaseModel):
     winner_team: str | None
     end_number: int
@@ -78,26 +84,12 @@ class StateSchema(BaseModel):
     second_team_remaining_time: float
     first_team_extra_end_remaining_time: float
     second_team_extra_end_remaining_time: float
+    last_move: ShotInfoSchema | None
     stone_coordinate: Optional[StoneCoordinateSchema] = None
     score: Optional[ScoreSchema] = None
 
     class Config:
         from_attributes = True
-
-
-class ShotInfoSchema(BaseModel):
-    shot_id: UUID
-    remaining_time: float
-    player_id: UUID
-    team_id: UUID
-    trajectory_id: UUID
-    pre_shot_state_id: UUID
-    post_shot_state_id: UUID
-    translation_velocity: float
-    rotation_velocity: float
-    shot_angle: float
-    simulate_flag: bool
-    state: Optional[StateSchema] = None
 
 
 class MatchDataSchema(BaseModel):

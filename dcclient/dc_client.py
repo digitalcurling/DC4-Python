@@ -20,9 +20,10 @@ from dcclient.send_database import (
     TeamModel,
 )
 
-TEAM_INFO_URL = "http://localhost:10000/store-team-config"
-SHOT_INFO_URL = "http://localhost:10000/shots"
-SSE_URL = "http://localhost:10000/matches"
+# クライアント側でこのホスト名とポート番号を代入できる形に変更したい。ただし、クライアント作成者が気にしなくても自動で設定される形にしたい。
+TEAM_INFO_URL = "http://localhost:5000/store-team-config"
+SHOT_INFO_URL = "http://localhost:5000/shots"
+SSE_URL = "http://localhost:5000/matches"
 
 # ログファイルの保存先ディレクトリを指定
 par_dir = pathlib.Path(__file__).parents[1]
@@ -63,6 +64,8 @@ class DCClient:
         self.password: str = password
         self.state_data: StateSchema = None
         self.winner_team: MatchNameModel = None
+        # 通信が切断された時刻（再接続までの時間計測用）
+        self.disconnected_at = None
 
     async def send_team_info(
         self, team_info: TeamModel
@@ -112,16 +115,36 @@ class DCClient:
 
         return self.match_team_name
 
+    async def send_shot_info_dc3(
+        self,
+        vx: float,
+        vy: float,
+        rotation: str
+    ):
+        translation_velocity = np.sqrt(vx**2 + vy**2)
+        shot_angle = np.arctan2(vy, vx)
+        angular_velocity = np.pi / 2
+        if rotation == "cw":
+            angular_velocity = np.pi / 2
+        elif rotation == "ccw":
+            angular_velocity = -np.pi / 2
+        else:
+            pass
+        await self.send_shot_info(
+            translation_velocity=translation_velocity,
+            shot_angle=shot_angle,
+            angular_velocity=angular_velocity,
+        )
+
+
     async def send_shot_info(
         self,
         translation_velocity: float,
-        angular_velocity_sign: int,
         shot_angle: float,
         angular_velocity=np.pi / 2,
     ):
         shot_info = ShotInfoModel(
             translation_velocity=translation_velocity,
-            angular_velocity_sign=angular_velocity_sign,
             angular_velocity=angular_velocity,
             shot_angle=shot_angle,
         )
@@ -158,6 +181,14 @@ class DCClient:
         self.logger.info(f"Connecting to SSE URL: {url}")  # URLをログに出力
         while True:
             try:
+                # 直前に切断されていた場合は、再接続までの時間を計測
+                if self.disconnected_at is not None:
+                    downtime = datetime.now() - self.disconnected_at
+                    self.logger.info(
+                        f"Reconnected after {downtime.total_seconds():.4f} seconds of disconnection."
+                    )
+                    self.disconnected_at = None
+
                 async with client.EventSource(
                     url=url, auth=BasicAuth(login=self.username, password=self.password), reconnection_time=5, max_connect_retry=5
                 ) as sse_client:
@@ -177,36 +208,19 @@ class DCClient:
                             
             except aiohttp.client_exceptions.ServerDisconnectedError:
                 self.logger.error("Server is not running. Please contact the administrator.")
+                # 切断時刻を記録
+                self.disconnected_at = datetime.now()
                 break
             except TimeoutError:
                 self.logger.error("Timeout error occurred while receiving state data.")
+                # タイムアウト発生時刻を記録（次のループで再接続までの経過時間を計測）
+                self.disconnected_at = datetime.now()
                 await asyncio.sleep(1)
             except Exception as e:
                 self.logger.error(f"An error occurred: {e}")
+                # その他のエラーでも切断扱いとして計測を開始
+                self.disconnected_at = datetime.now()
                 await asyncio.sleep(5)
-
-        # state_data = sse_client(response)
-
-        # state_data = await asyncio.wait_for(self.websocket.recv(), timeout=50.0)
-        # state_data = json.loads(state_data)
-
-        # stone_coordinate_data = state_data.get("stone_coordinate", {}).get(
-        #     "stone_coordinate_data"
-        # )
-        # if isinstance(stone_coordinate_data, dict):
-        #     for team, coords in stone_coordinate_data.items():
-        #         stone_coordinate_data[team] = [
-        #             CoordinateDataSchema(**coord) for coord in coords
-        #         ]
-
-        # # Convert score to the appropriate format
-        # score_data = state_data.get("score", {})
-        # if isinstance(score_data, dict):
-        #     state_data["score"] = ScoreSchema(**score_data)
-        # # self.logger.info(f"state_data.stone_coordinate: {state_data.stone_coordinate}")
-
-        # self.state_data = StateSchema(**state_data)
-        # # self.logger.info(f"Received state_data: {self.state_data}")
 
     def get_end_number(self):
         return self.state_data.end_number
@@ -221,13 +235,16 @@ class DCClient:
     def get_next_team(self):
         return self.state_data.next_shot_team
 
+    def get_last_move(self):
+        return self.state_data.last_move
+
     def get_winner_team(self):
         winner_team = self.state_data.winner_team
         return winner_team
 
     def get_stone_coordinates(self):
         # Access the nested data properly from the StoneCoordinateSchema instance
-        stone_coordinate_data = self.state_data.stone_coordinate.stone_coordinate_data
+        stone_coordinate_data = self.state_data.stone_coordinate.data
         # Extract coordinates for each team
         team0_stone_coordinate = stone_coordinate_data.get("team0", [])
         team1_stone_coordinate = stone_coordinate_data.get("team1", [])
