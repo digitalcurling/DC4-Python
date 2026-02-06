@@ -42,6 +42,14 @@ class DCClient:
         log_level: int = logging.INFO,
         match_team_name: MatchNameModel = MatchNameModel.team1,
     ):
+        """Initialize the DCClient.
+            Args:
+                match_id (UUID): To identify the match.
+                username (str): Username for authentication.
+                password (str): Password for authentication.
+                log_level (int): Logging level.
+                match_team_name (MatchNameModel): The name of the team in the match.
+        """
         self.logger = logging.getLogger("DC_Client")
         self.logger.propagate = False
         self.logger.setLevel(log_level)
@@ -65,6 +73,11 @@ class DCClient:
         self.winner_team: MatchNameModel = None
 
     def set_server_address(self, host: str, port: int) -> None:
+        """Set the server address for the client.
+            Args:
+                host (str): The server host address.
+                port (int): The server port number.
+        """
         self.team_info_url = f"http://{host}:{port}/store-team-config"
         self.shot_info_url = f"http://{host}:{port}/shots"
         self.sse_url = f"http://{host}:{port}/matches"
@@ -128,6 +141,12 @@ class DCClient:
         vy: float,
         rotation: str
     ):
+        """Send shot information to the server for DC3.
+        Args:
+            vx (float): The x-component of the velocity of the stone.
+            vy (float): The y-component of the velocity of the stone.
+            rotation (str): The rotation direction of the stone ("cw" for clockwise, "ccw" for counter-clockwise).
+        """
         translational_velocity = np.sqrt(vx**2 + vy**2)
         shot_angle = np.arctan2(vy, vx)
         angular_velocity = np.pi / 2
@@ -150,6 +169,13 @@ class DCClient:
         shot_angle: float,
         angular_velocity=np.pi / 2,
     ):
+        """Send shot information to the server.
+        Args:
+
+            translational_velocity (float): The translational velocity of the stone.
+            shot_angle (float): The shot angle of the stone in radians.
+            angular_velocity (float): The angular velocity of the stone.
+        """
         shot_info = ShotInfoModel(
             translational_velocity=translational_velocity,
             angular_velocity=angular_velocity,
@@ -187,8 +213,10 @@ class DCClient:
         self,
         positioned_stones: PositionedStonesModel,
     ):
-        # Send positioned stones information to the server.
-        # positioned_stones: PositionedStonesModel
+        """
+            Send positioned stones information to the server.
+            positioned_stones: PositionedStonesModel
+        """
         url = f"{self.positioned_stones_url}/{self.match_id}/end-setup"
         positioned_stones_value: PositionedStonesModel = positioned_stones
 
@@ -227,6 +255,10 @@ class DCClient:
                 self.logger.error(f"An error occurred: {e}")
 
     async def receive_state_data(self) -> AsyncGenerator[StateSchema, None]:
+        """Receive state data from the server using Server-Sent Events (SSE).
+        Yields:
+            StateSchema: The latest state data received from the server.
+        """
         url = f"{self.sse_url}/{self.match_id}/stream"
         self.logger.info(f"Connecting to SSE URL: {url}")  # URLをログに出力
 
@@ -260,26 +292,39 @@ class DCClient:
                 await asyncio.sleep(5)
 
     def get_end_number(self):
+        """Get the current end number from the state data."""
         return self.state_data.end_number
 
     def get_shot_number(self):
+        """Get the current shot number from the state data."""
         return self.state_data.total_shot_number
 
     def get_score(self):
+        """Get the current score from the state data."""
         score = self.state_data.score
         return score.first_team_score, score.second_team_score
 
     def get_next_team(self):
+        """Get the next team to shot from the state data."""
         return self.state_data.next_shot_team
 
     def get_last_move(self):
+        """Get the last move information from the state data."""
         return self.state_data.last_move
 
     def get_winner_team(self):
+        """Get the winner team from the state data."""
         winner_team = self.state_data.winner_team
         return winner_team
 
     def get_stone_coordinates(self):
+        """Get the stone coordinates for both teams from the state data.
+        Returns:
+            Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]: 
+                A tuple containing two lists of tuples.
+                The first list contains the coordinates of team0's stones,
+                and the second list contains the coordinates of team1's stones.
+        """
         # Access the nested data properly from the StoneCoordinateSchema instance
         stone_coordinate_data = self.state_data.stone_coordinate.data
         # Extract coordinates for each team
