@@ -1,14 +1,12 @@
 import json
 import aiohttp.client_exceptions
-import aiohttp
 import asyncio
-from aiohttp import BasicAuth
 import logging
 
 from load_secrets import username, password
 from dcclient.send_data import ClientDataModel
+from dcclient.match_maker_client import MatchMakerClient
 
-URL = "http://localhost:5000/matches"
 logger = logging.getLogger("Match_Maker")
 logger.setLevel(level=logging.INFO)
 formatter = logging.Formatter(
@@ -32,28 +30,20 @@ class MatchMaker:
     # このプログラムを実行すると、match_id.jsonに次の試合で使用するmatch_idが生成されます
     # このmatch_idを使って試合を開始します
     async def main(self, data: ClientDataModel):
-        async with aiohttp.ClientSession(
-            auth=BasicAuth(login=username, password=password)) as session:
-            try:
-                async with session.post(
-                    url=URL,
-                    json=data.model_dump(),
-                    ) as response:
-
-                        if response.status == 200:
-                            logger.debug(f"Success: {response.status}")
-                            match_id = await response.json()
-                            logger.info(f"match_id: {match_id}")
-                            with open("match_id.json", "w") as f:
-                                json.dump(match_id, f)
-                        elif response.status == 400:
-                            logger.error(f"Bad Request: {response}")
-                        elif response.status == 401:
-                            logger.error(f"Failed: {response}")
-                        elif response.status == 422:
-                            logger.error("Some of the setting are wrong. Please check the setting.json file.")
-            except aiohttp.client_exceptions.ServerDisconnectedError:
-                logger.error("Server is not running. Please contact the administrator")
+        try:
+            match_client = MatchMakerClient(
+                host="localhost", port=5000, username=username, password=password
+            )
+            match_id = await match_client.create_match(data)
+            logger.info(f"match_id: {match_id}")
+            with open("match_id.json", "w") as f:
+                json.dump(match_id, f)
+        except aiohttp.client_exceptions.ServerDisconnectedError:
+            logger.error("Server is not running. Please contact the administrator")
+        except aiohttp.client_exceptions.ClientConnectorError:
+            logger.error("Cannot connect to server. Is it running on localhost:5000?")
+        except RuntimeError as e:
+            logger.error(str(e))
 
 
 if __name__ == "__main__":
