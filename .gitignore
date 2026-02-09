@@ -163,5 +163,3 @@ cython_debug/
 
 # font
 *.otf
-!client0/.env
-!client1/.env
