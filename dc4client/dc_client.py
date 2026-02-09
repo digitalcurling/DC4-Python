@@ -141,6 +141,8 @@ class DCClient:
             except aiohttp.client_exceptions.ServerDisconnectedError:
                 self.logger.error("Server is not running. Please contact the administrator.")
 
+        self.logger.debug(f"match_team_name: {self.match_team_name}")
+
         return self.match_team_name
 
     async def send_shot_info_dc3(
