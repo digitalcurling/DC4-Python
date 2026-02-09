@@ -12,3 +12,5 @@ pip install dc4client
 
 ## 使い方
 詳しいドキュメントについては[こちら](https://kr-work.github.io/DC4-Python/)になります。
+
+テンプレートは[こちら](https://github.com/kr-work/DC4-client-template)。
