@@ -298,14 +298,28 @@ class DCClient:
                             state_data = StateSchema(**state_data)
                             self.logger.debug(f"Received state data: {state_data}")
                             
-            except aiohttp.client_exceptions.ServerDisconnectedError:
-                self.logger.error("Server is not running. Please contact the administrator.")
-                break
-            except TimeoutError:
+            except asyncio.CancelledError:
+                raise
+            except (
+                aiohttp.client_exceptions.ClientConnectorError,
+                aiohttp.client_exceptions.ClientConnectionError,
+                aiohttp.client_exceptions.ClientOSError,
+                OSError,
+            ) as e:
+                self.logger.error(f"SSE connection error: {e}")
+                await asyncio.sleep(1)
+            except (aiohttp.client_exceptions.ServerDisconnectedError,) as e:
+                self.logger.error(f"Server disconnected during SSE: {e}")
+                await asyncio.sleep(1)
+            except (
+                TimeoutError,
+                asyncio.TimeoutError,
+                aiohttp.client_exceptions.ServerTimeoutError,
+            ):
                 self.logger.error("Timeout error occurred while receiving state data.")
                 await asyncio.sleep(1)
             except Exception as e:
-                self.logger.error(f"An error occurred: {e}")
+                self.logger.error(f"An error occurred while receiving state data: {e}")
                 await asyncio.sleep(5)
 
     def get_end_number(self):
