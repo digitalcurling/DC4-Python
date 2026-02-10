@@ -3,14 +3,15 @@ from aiohttp import BasicAuth
 import asyncio
 import json
 import logging
-import pathlib
-from datetime import datetime
 from uuid import UUID
 import aiohttp.client_exceptions
 import numpy as np
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Any, Optional, List, Dict
 from aiohttp_sse_client2 import client
-from typing import Any
+from pathlib import Path
+from datetime import datetime
+import base64  # Moved to top level
+import random  # Moved to top level
 
 from dc4client.receive_data import (
     StateSchema,
@@ -22,16 +23,56 @@ from dc4client.send_data import (
     PositionedStonesModel
 )
 
-# クライアント側でこのホスト名とポート番号を代入できる形に変更したい。ただし、クライアント作成者が気にしなくても自動で設定される形にしたい。
+
+class MemoryBufferHandler(logging.Handler):
+    """
+    Custom logging handler that stores log records in a memory list
+    instead of writing them to a file immediately.
+    """
+    def __init__(self):
+        super().__init__()
+        self.buffer: List[Dict[str, Any]] = []
+
+    def emit(self, record: logging.LogRecord):
+        """Record log data
+        Args:
+            record (logging.LogRecord): The log record to be buffered.
+        """        
+        try:
+            # Convert log record to dictionary format
+            log_entry = {
+                "timestamp": datetime.fromtimestamp(record.created).isoformat(timespec="milliseconds"),
+                "logger": record.name,
+                "level": record.levelname,
+                "message": record.getMessage(),
+            }
+            if record.exc_info:
+                # Format exception info if present
+                log_entry["exception"] = self.format(record)
+            
+            self.buffer.append(log_entry)
+        except Exception:
+            self.handleError(record)
 
 
-# ログファイルの保存先ディレクトリを指定
-par_dir = pathlib.Path(__file__).parents[1]
-log_dir = par_dir / "logs"
+class JsonLineFormatter(logging.Formatter):
+    """Format log records as single-line JSON.
+    Output keys match:
+      {"timestamp": "...", "logger": "...", "level": "...", "message": "..."}
+    """
 
-current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_file_name = f"dc3_5_{current_time}.log"
-log_file_path = log_dir / log_file_name
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry: Dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(record.created).isoformat(timespec="milliseconds"),
+            "logger": record.name,
+            "level": record.levelname,
+            "message": record.getMessage(),
+        }
+
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+
+        return json.dumps(log_entry, ensure_ascii=False)
 
 
 class DCClient:
@@ -42,6 +83,10 @@ class DCClient:
             password (str): Password for authentication.
             log_level (int): Logging level.
             match_team_name (MatchNameModel): The name of the team in the match.
+            socket_read_timeout (int | None): Timeout in seconds for socket read. Defaults to 15. Set None to disable.
+            enable_tcp_keepalive (bool): Whether to enable TCP Keep-Alive. Defaults to True.
+            auto_save_log (bool): Whether to enable log buffering and saving. Defaults to True.
+            log_dir (str): Directory to save logs. Defaults to "logs".
     """
     def __init__(
         self,
@@ -50,21 +95,28 @@ class DCClient:
         password: str,
         log_level: int = logging.INFO,
         match_team_name: MatchNameModel = MatchNameModel.team1,
+        socket_read_timeout: Optional[int] = 15,
+        enable_tcp_keepalive: bool = True,
+        auto_save_log: bool = True,
+        log_dir: str = "logs" 
     ):
+        # Initialize internal logger
         self.logger = logging.getLogger("DC_Client")
         self.logger.propagate = False
         self.logger.setLevel(log_level)
 
-        formatter = logging.Formatter(
-            "%(asctime)s, %(name)s : %(levelname)s - %(message)s"
+        # Initialize memory buffer handler for file saving
+        self.auto_save_log = auto_save_log
+        self.log_dir = Path(log_dir)
+        existing_memory_handler = next(
+            (h for h in self.logger.handlers if isinstance(h, MemoryBufferHandler)),
+            None,
         )
-        # file_handler = logging.FileHandler(log_file_path, encoding="utf-8", mode="w")
-        # file_handler.setFormatter(formatter)
-        # self.logger.addHandler(file_handler)
-
-        st_handler = logging.StreamHandler()
-        st_handler.setFormatter(formatter)
-        self.logger.addHandler(st_handler)
+        if existing_memory_handler is None:
+            self.memory_handler = MemoryBufferHandler()
+            self.logger.addHandler(self.memory_handler)
+        else:
+            self.memory_handler = existing_memory_handler
 
         self.match_id: UUID = match_id
         self.match_team_name: MatchNameModel = match_team_name
@@ -72,6 +124,47 @@ class DCClient:
         self.password: str = password
         self.state_data: StateSchema = None
         self.winner_team: MatchNameModel = None
+
+        self.socket_read_timeout = socket_read_timeout
+        self.enable_tcp_keepalive = enable_tcp_keepalive
+
+        # Initialize URLs (defaults; can be overwritten by set_server_address)
+        self.team_info_url = ""
+        self.shot_info_url = ""
+        self.sse_url = ""
+        self.positioned_stones_url = ""
+
+    def save_log_file(self) -> None:
+        """Saves the buffered logs to a JSONL file."""
+        if not self.auto_save_log or not self.memory_handler.buffer:
+            return
+
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate file name including team name to avoid conflicts
+            team_name = self.match_team_name.value if self.match_team_name else "unknown"
+            if isinstance(team_name, MatchNameModel):
+                 team_name = team_name.value
+            
+            safe_team_name = str(team_name).replace(" ", "_")
+            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_name = f"dc4_{safe_team_name}_{current_time}.jsonl"
+            file_path = self.log_dir / file_name
+
+            self.logger.debug(f"Saving log file to: {file_path}")
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                for entry in self.memory_handler.buffer:
+                    f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            
+            # Print directly to stdout to ensure visibility
+            print(f"Log file saved successfully: {file_path}")
+
+        except Exception as e:
+            import sys
+            print(f"Failed to save log file: {e}", file=sys.stderr)
+
 
     def set_server_address(self, host: str, port: int) -> None:
         """Set the server address for the client.
@@ -95,15 +188,9 @@ class DCClient:
     ) -> MatchNameModel:
         """Send team information to the server.
         Args:
-            match_id (UUID): To identify the match.
-            team_info (TeamModel):
-                use_default_cinfig (bool): Whether to use default configuration.
-                team_name (str): Your team name.
-                match_team_name (MatchNameModel): The name of the team in the match.
-                player1 (PlayerModel): Player 1 information.
-                player2 (PlayerModel): Player 2 information.
-                player3 (PlayerModel | None): Player 3 information (optional; may be None for Mix Doubles).
-                player4 (PlayerModel | None): Player 4 information (optional; may be None for Mix Doubles).
+            team_info (TeamModel): Team information model.
+        Returns:
+            MatchNameModel: The assigned team name in the match.
         """
 
         async with aiohttp.ClientSession(
@@ -121,7 +208,7 @@ class DCClient:
                     response_body = await self._read_response_body(response)
 
                     if response.status == 200:
-                        self.logger.info("Team information successfully sent.")
+                        self.logger.debug("Team information successfully sent.")
                         if isinstance(response_body, str):
                             self.match_team_name = MatchNameModel(response_body)
                         else:
@@ -140,6 +227,8 @@ class DCClient:
                         )
             except aiohttp.client_exceptions.ServerDisconnectedError:
                 self.logger.error("Server is not running. Please contact the administrator.")
+            except Exception as e:
+                self.logger.error(f"Failed to connect to server: {e}")
 
         self.logger.debug(f"match_team_name: {self.match_team_name}")
 
@@ -151,7 +240,7 @@ class DCClient:
         vy: float,
         rotation: str
     ):
-        """Send shot information to the server for DC3.
+        """Send shot information to the server for DC3 style input.
         Args:
             vx (float): The x-component of the velocity of the stone.
             vy (float): The y-component of the velocity of the stone.
@@ -172,7 +261,6 @@ class DCClient:
             angular_velocity=angular_velocity,
         )
 
-
     async def send_shot_info(
         self,
         translational_velocity: float,
@@ -181,7 +269,6 @@ class DCClient:
     ):
         """Send shot information to the server.
         Args:
-
             translational_velocity (float): The translational velocity of the stone.
             shot_angle (float): The shot angle of the stone in radians.
             angular_velocity (float): The angular velocity of the stone.
@@ -223,11 +310,12 @@ class DCClient:
     async def send_positioned_stones_info(
         self,
         positioned_stones: PositionedStonesModel,
-    ):
+    ) -> None:
         """
             This method is to support mix doubles positioned stones info.
             Send positioned stones information to the server.
-            positioned_stones: PositionedStonesModel
+            Args:
+                positioned_stones (PositionedStonesModel): Positioned stones information model.
         """
         url = f"{self.positioned_stones_url}/{self.match_id}/end-setup"
 
@@ -272,55 +360,139 @@ class DCClient:
                 self.logger.error(f"An error occurred: {e}")
 
     async def receive_state_data(self) -> AsyncGenerator[StateSchema, None]:
-        """Receive state data from the server using Server-Sent Events (SSE).
-        Yields:
-            StateSchema: The latest state data received from the server.
         """
+        Robust SSE receiver with:
+          - explicit reconnect loop (exponential backoff + jitter)
+          - Authorization header (Basic) for wider compatibility
+          - TCP connector with keepalive options
+          - clear logging for connect / disconnect / parse errors
+        """
+        # Note: 'base64' and 'random' are now imported at the top of the file
+        
         url = f"{self.sse_url}/{self.match_id}/stream"
-        self.logger.info(f"Connecting to SSE URL: {url}")  # URLをログに出力
+        self.logger.info(f"SSE loop start -> {url}")
+
+        # Basic auth header construction
+        credentials = f"{self.username}:{self.password}"
+        b64 = base64.b64encode(credentials.encode()).decode()
+        headers = {
+            "Accept": "text/event-stream",
+            "Authorization": f"Basic {b64}",
+        }
+
+        # Application level timeout (Socket Read Timeout)
+        timeout_settings = aiohttp.ClientTimeout(
+            total=None, 
+            sock_read=self.socket_read_timeout
+        )
+
+        backoff = 1.0
+        max_backoff = 60.0
+        consecutive_auth_errors = 0
+        AUTH_ERROR_THRESHOLD = 5
 
         while True:
+            self.logger.info(f"Attempting SSE connect (next retry in approx {backoff:.1f}s if fail)")
+            
+            # Create a new connector and session on each loop iteration
+            connector = None
+            if self.enable_tcp_keepalive:
+                connector = aiohttp.TCPConnector(
+                    ssl=False,
+                    enable_cleanup_closed=True,
+                    keepalive_timeout=30,
+                    force_close=False,
+                )
+
             try:
-                async with client.EventSource(
-                    url=url, auth=BasicAuth(login=self.username, password=self.password), reconnection_time=5, max_connect_retry=5
-                ) as sse_client:
+                # Create the session first and pass it into EventSource
+                async with aiohttp.ClientSession(connector=connector, timeout=timeout_settings) as session:
+                    async with client.EventSource(
+                        url=url,
+                        headers=headers,
+                        session=session, # Pass the session here
+                        reconnection_time=1,
+                        max_connect_retry=None,
+                    ) as sse_client:
+                        
+                        self.logger.debug("SSE connection established.")
+                        has_received_valid_data = False
 
-                    async for event in sse_client:
-                        if event.type == "latest_state_update":
-                            latest_state_data: StateSchema = json.loads(event.data)
-                            latest_state_data = StateSchema(**latest_state_data)
-                            self.state_data = latest_state_data
-                            self.logger.debug(f"Received latest state data: {latest_state_data}")
-                            yield latest_state_data
+                        async for event in sse_client:
+                            if not has_received_valid_data:
+                                backoff = 1.0
+                                consecutive_auth_errors = 0
+                                has_received_valid_data = True
+                                self.logger.debug("First packet received. Backoff reset.")
 
-                        elif event.type == "state_update":
-                            state_data: StateSchema = json.loads(event.data)
-                            state_data = StateSchema(**state_data)
-                            self.logger.debug(f"Received state data: {state_data}")
-                            
+                            try:
+                                payload = json.loads(event.data) if event.data else None
+
+                                if event.type == "latest_state_update" and payload is not None:
+                                    latest_state = StateSchema(**payload)
+                                    self.state_data = latest_state
+                                    # Log state data here. 
+                                    self.logger.info(f"latest_state_data: {latest_state}")
+                                    yield latest_state
+
+                                elif event.type == "state_update" and payload is not None:
+                                    state = StateSchema(**payload)
+                                    self.state_data = state
+                                    self.logger.info(f"state_data: {state}")
+                                    yield state
+
+                            except asyncio.CancelledError:
+                                self.logger.debug("receive_state_data cancelled during processing.")
+                                raise
+                            except Exception:
+                                self.logger.exception("Failed to parse/handle SSE event data")
+                                continue
+
+                # Exited async for => server closed the stream normally
+                self.logger.warning("SSE stream closed by server. Reconnecting...")
+
             except asyncio.CancelledError:
+                self.logger.warning("receive_state_data cancelled; exiting loop.")
                 raise
-            except (
-                aiohttp.client_exceptions.ClientConnectorError,
-                aiohttp.client_exceptions.ClientConnectionError,
-                aiohttp.client_exceptions.ClientOSError,
-                OSError,
-            ) as e:
-                self.logger.error(f"SSE connection error: {e}")
-                await asyncio.sleep(1)
-            except (aiohttp.client_exceptions.ServerDisconnectedError,) as e:
-                self.logger.error(f"Server disconnected during SSE: {e}")
-                await asyncio.sleep(1)
+
+            except aiohttp.ClientResponseError as e:
+                status = getattr(e, "status", None)
+                self.logger.warning(f"ClientResponseError: status={status}; {e}")
+                
+                if status in (401, 403):
+                    consecutive_auth_errors += 1
+                    self.logger.warning(f"Auth error count: {consecutive_auth_errors}")
+                    if consecutive_auth_errors >= AUTH_ERROR_THRESHOLD:
+                        backoff = min(max_backoff, backoff * 4)
+                        self.logger.error("Too many auth errors. Check credentials.")
+                
+                sleep_time = backoff + random.uniform(0, 0.5 * backoff)
+                await asyncio.sleep(sleep_time)
+                backoff = min(max_backoff, backoff * 2)
+
             except (
                 TimeoutError,
                 asyncio.TimeoutError,
                 aiohttp.client_exceptions.ServerTimeoutError,
-            ):
-                self.logger.error("Timeout error occurred while receiving state data.")
-                await asyncio.sleep(1)
+                aiohttp.client_exceptions.ClientPayloadError,
+                aiohttp.client_exceptions.ClientConnectorError,
+                aiohttp.client_exceptions.ClientConnectionError,
+                aiohttp.client_exceptions.ClientOSError,
+                OSError,
+                aiohttp.client_exceptions.ServerDisconnectedError,
+            ) as e:
+                sleep_time = backoff + random.uniform(0, 0.5 * backoff)
+                self.logger.warning(f"Network error: {e!r}. Reconnecting in {sleep_time:.2f}s")
+                
+                await asyncio.sleep(sleep_time)
+                backoff = min(max_backoff, backoff * 2)
+
             except Exception as e:
-                self.logger.error(f"An error occurred while receiving state data: {e}")
-                await asyncio.sleep(5)
+                sleep_time = backoff + random.uniform(0, 0.5 * backoff)
+                self.logger.exception(f"Unexpected error: {e!r}. Reconnecting in {sleep_time:.2f}s")
+                
+                await asyncio.sleep(sleep_time)
+                backoff = min(max_backoff, backoff * 2)
 
     def get_end_number(self):
         """Get the current end number from the state data."""
@@ -364,10 +536,3 @@ class DCClient:
         team0_coordinates = [(coord.x, coord.y) for coord in team0_stone_coordinate]
         team1_coordinates = [(coord.x, coord.y) for coord in team1_stone_coordinate]
         return team0_coordinates, team1_coordinates
-
-
-async def main():
-    pass
-
-if __name__ == "__main__":
-    asyncio.run(main())
